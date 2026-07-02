@@ -294,7 +294,6 @@ export default function CallsPage() {
   };
 
   const handleLogout = () => {
-    clearAllCalls();
     localStorage.removeItem("user");
     router.push("/");
   };
