@@ -17,15 +17,17 @@ import { getCenterForDistrict, DISTRICT_MAPPINGS } from "@/app/data";
 import { getRoutingDecision, CHECKLIST } from "@/app/data";
 import { CENTERS_MAP } from "@/app/data";
 
-// Функция для поиска адресов (автодополнение)
+// Функция для поиска адресов (автодополнение) только по Оренбургской области
 async function searchAddresses(
   query: string,
 ): Promise<Array<{ display_name: string; lat: string; lon: string }>> {
   if (query.length < 3) return [];
 
   try {
+    // Добавляем фильтр по Оренбургской области и городу Оренбург
+    const searchQuery = `${query} Оренбургская область`;
     const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&accept-language=ru&limit=5&countrycodes=ru`,
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&accept-language=ru&limit=10&countrycodes=ru&addressdetails=1&bounded=1&viewbox=50.0,54.0,62.0,50.0`,
       {
         headers: {
           "User-Agent": "SMP-Routing-System/1.0",
@@ -38,14 +40,73 @@ async function searchAddresses(
     }
 
     const data = await response.json();
-    return data;
+    
+    // Фильтруем результаты, чтобы оставить только адреса из Оренбургской области
+    const filteredData = data.filter((item: any) => {
+      const address = item.address || {};
+      // Проверяем наличие Оренбургской области в адресе
+      const state = address.state || address.region || '';
+      const city = address.city || address.town || address.village || '';
+      const fullAddress = item.display_name || '';
+      
+      // Проверяем, что адрес относится к Оренбургской области
+      return state.includes('Оренбургская') || 
+             state.includes('Оренбург') ||
+             fullAddress.includes('Оренбургская область') ||
+             fullAddress.includes('Оренбургская обл') ||
+             // Также включаем адреса из города Оренбург
+             (city.includes('Оренбург') && !state.includes('Москва') && !state.includes('Санкт-Петербург'));
+    });
+
+    return filteredData.slice(0, 10);
   } catch (error) {
     console.error("Ошибка поиска адресов:", error);
     return [];
   }
 }
 
-// Функция для определения района из адреса (вынесем в отдельную функцию)
+// Функция для получения координат по адресу
+async function getCoordinatesFromAddress(
+  address: string,
+): Promise<{ lat: number; lon: number } | null> {
+  try {
+    const searchQuery = `${address} Оренбургская область`;
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&accept-language=ru&limit=1&countrycodes=ru`,
+      {
+        headers: {
+          "User-Agent": "SMP-Routing-System/1.0",
+        },
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error("Ошибка получения координат");
+    }
+
+    const data = await response.json();
+    if (data && data.length > 0) {
+      // Дополнительная проверка, что адрес из Оренбургской области
+      const addressData = data[0];
+      const fullAddress = addressData.display_name || '';
+      if (!fullAddress.includes('Оренбургская область') && 
+          !fullAddress.includes('Оренбург') &&
+          !fullAddress.includes('Оренбургская обл')) {
+        return null;
+      }
+      return {
+        lat: parseFloat(addressData.lat),
+        lon: parseFloat(addressData.lon),
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error("Ошибка получения координат:", error);
+    return null;
+  }
+}
+
+// Функция для определения района из адреса
 const extractDistrictFromAddress = (address: string): string | null => {
   if (!address || address.length < 2) return null;
 
@@ -78,112 +139,88 @@ const extractDistrictFromAddress = (address: string): string | null => {
   return null;
 };
 
-// Функция для получения адреса по координатам (обратное геокодирование)
-async function getAddressFromCoords(
-  lat: number,
-  lng: number,
-): Promise<{
-  address: string;
-  district: string;
-  city: string;
-}> {
-  try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=ru`,
-      {
-        headers: {
-          "User-Agent": "SMP-Routing-System/1.0",
-        },
-      },
-    );
-
-    if (!response.ok) {
-      throw new Error("Ошибка геокодирования");
-    }
-
-    const data = await response.json();
-
-    if (data && data.display_name) {
-      const address = data.address || {};
-      const districtFromApi =
-        address.city_district ||
-        address.suburb ||
-        address.district ||
-        address.city ||
-        "";
-      const city = address.city || address.town || address.village || "";
-
-      const fullAddress = data.display_name;
-
-      // Используем ту же логику для определения района
-      let foundDistrict = districtFromApi;
-
-      // Ищем совпадение с нашей базой районов
-      const districts = DISTRICT_MAPPINGS.map((m) => m.district);
-      const matchingDistrict = districts.find(
-        (d) =>
-          foundDistrict.includes(d) ||
-          d.includes(foundDistrict) ||
-          foundDistrict.toLowerCase().includes(d.toLowerCase()) ||
-          d.toLowerCase().includes(foundDistrict.toLowerCase()),
-      );
-
-      if (matchingDistrict) {
-        foundDistrict = matchingDistrict;
-      } else {
-        // Если не нашли, пробуем искать по частям адреса
-        const extractedDistrict = extractDistrictFromAddress(fullAddress);
-        if (extractedDistrict) {
-          foundDistrict = extractedDistrict;
-        } else {
-          // Если ничего не нашли, используем город
-          foundDistrict = city || "Ленинский район";
-        }
+// Функция для получения краткого адреса (город, улица, дом, район)
+function getShortAddress(fullAddress: string): string {
+  if (!fullAddress) return "";
+  
+  // Разбиваем адрес на части
+  const parts = fullAddress.split(',').map(p => p.trim());
+  
+  // Оставляем только значимые части: город, улицу, дом, район
+  const importantParts: string[] = [];
+  let hasStreet = false;
+  let hasCity = false;
+  let hasHouse = false;
+  let hasDistrict = false;
+  
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    
+    // Проверяем, является ли часть городом
+    if (lower.includes('город') || lower.includes('г.') || 
+        lower.includes('поселок') || lower.includes('село') || 
+        lower.includes('деревня') || lower.includes('г ') ||
+        /^[а-яА-Я]+\s*$/.test(part) && part.length <= 20) {
+      if (!hasCity) {
+        importantParts.push(part);
+        hasCity = true;
       }
-
-      return {
-        address: fullAddress,
-        district: foundDistrict,
-        city: city,
-      };
+    } 
+    // Проверяем, является ли часть улицей
+    else if (lower.includes('улица') || lower.includes('ул.') || 
+             lower.includes('проспект') || lower.includes('пр.') || 
+             lower.includes('переулок') || lower.includes('пер.') ||
+             lower.includes('бульвар') || lower.includes('б-р') ||
+             lower.includes('шоссе') || lower.includes('аллея') ||
+             lower.includes('набережная')) {
+      if (!hasStreet) {
+        importantParts.push(part);
+        hasStreet = true;
+      }
+    } 
+    // Проверяем, является ли часть номером дома
+    else if (lower.includes('дом') || lower.includes('д.') || 
+             /^\s*\d+/.test(part) || /д\.\s*\d+/.test(lower)) {
+      if (!hasHouse) {
+        importantParts.push(part);
+        hasHouse = true;
+      }
     }
-
-    throw new Error("Не удалось определить адрес");
-  } catch (error) {
-    console.error("Ошибка получения адреса:", error);
-    return {
-      address: "Адрес не определен",
-      district: "Ленинский район",
-      city: "Оренбург",
-    };
+    // Проверяем, является ли часть районом
+    else if (lower.includes('район') || lower.includes('р-н')) {
+      if (!hasDistrict) {
+        importantParts.push(part);
+        hasDistrict = true;
+      }
+    }
   }
+  
+  // Если не удалось собрать адрес, возвращаем первые 3 части
+  if (importantParts.length === 0) {
+    return parts.slice(0, 3).join(', ');
+  }
+  
+  // Если есть город, но нет улицы и дома, добавляем еще части
+  if (hasCity && !hasStreet && !hasHouse) {
+    const additionalParts = parts.filter(p => !importantParts.includes(p));
+    if (additionalParts.length > 0) {
+      importantParts.push(additionalParts.slice(0, 2).join(', '));
+    }
+  }
+  
+  return importantParts.join(', ');
 }
 
-// Функция для получения текущего местоположения
-function getCurrentPosition(): Promise<{ lat: number; lng: number }> {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error("Геолокация не поддерживается"));
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        resolve({
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-        });
-      },
-      (error) => {
-        reject(error);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0,
-      },
-    );
-  });
+// Функция для определения ближайшего центра по координатам
+function findNearestCenter(lat: number, lon: number, centerType: 'with_surgery' | 'without_surgery'): string | null {
+  // Здесь должна быть логика поиска ближайшего центра по координатам
+  // Пока используем существующую логику с районами
+  // Для демонстрации возвращаем первый подходящий центр
+  const centers = Object.values(CENTERS_MAP).filter(c => c.type === centerType);
+  if (centers.length > 0) {
+    return centers[0].name;
+  }
+  return null;
 }
 
 export default function CallsPage() {
@@ -416,7 +453,7 @@ export default function CallsPage() {
                   d="M12 4v16m8-8H4"
                 />
               </svg>
-              Новый вызов
+              Начать вызов
             </button>
             {hasActiveCall && (
               <p className="text-sm text-gray-400 mt-2">
@@ -462,30 +499,27 @@ export default function CallsPage() {
                       </td>
                       <td className="px-6 py-4 font-medium text-gray-800 w-32 min-w-[100px] truncate">
                         {call.patientName}
-                        
                       </td>
                       <td className="px-6 my-4 text-gray-600 max-w-[400px] line-clamp-2">
                         {call.address}
-                        
                       </td>
                       <td className="px-6 py-4 text-gray-500 text-sm w-32 whitespace-nowrap min-w-[100px]">
                         {call.time}
                       </td>
-                      <td className="px-6 py-4 w-28 flex-col flex items-start min-w-[200px] gap-2">
+                      <td className="px-6 py-4 w-28 flex-col flex items-start  min-w-[200px] gap-2">
                         <span
                           className={`px-2 py-1 rounded-md text-xs font-medium whitespace-nowrap ${getStatusColor(call.status)}`}
                         >
                           {getStatusText(call.status)}
-                          
                         </span>
-                        <span className="text-black text-sm opacity-20">Причина: {call.reason}</span>
-                        
+                        { call.reason && <span className="text-black text-sm opacity-20">Причина: {call.reason}</span>}
                       </td>
-                      <td className="px-6 py-4 text-gray-600 text-sm min-w-[200px]">
+                      <td className="px-6 py-4 text-gray-600 min-w-[200px]">
                         <div className="flex flex-col items-start justify-center gap-1">
                           <span className="truncate">
                             {call.destination || "—"}
                           </span>
+
                           {call.status === "active" && call.destination && (
                             <Link
                               href={`/map/${call.id}?dest=${encodeURIComponent(call.destination)}`}
@@ -504,7 +538,7 @@ export default function CallsPage() {
                                 "Укажите причину завершения вызова:",
                               );
                               if (reason !== null && reason.trim()) {
-                                const updated = cancelCall(call.id, reason);
+                                const updated = completeCall(call.id, reason);
                                 if (updated) {
                                   loadCalls();
                                 }
@@ -567,7 +601,7 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
 
   // Состояния для автодополнения адреса
   const [addressSuggestions, setAddressSuggestions] = useState<
-    Array<{ display_name: string; lat: string; lon: string }>
+    Array<{ display_name: string; lat: string; lon: string; short_address: string }>
   >([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -589,40 +623,6 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
     new Set(DISTRICT_MAPPINGS.map((m) => m.district)),
   ).sort();
 
-  // Автоматическое определение местоположения при открытии модалки
-  useEffect(() => {
-    const detectLocation = async () => {
-      setIsLoadingLocation(true);
-      setLocationError(null);
-
-      try {
-        const position = await getCurrentPosition();
-        const addressData = await getAddressFromCoords(
-          position.lat,
-          position.lng,
-        );
-
-
-        setPatientInfo((prev) => ({
-          ...prev,
-          address: addressData.address,
-          district: addressData.district,
-        }));
-
-        setLocationError(null);
-      } catch (error) {
-        console.error("Ошибка определения местоположения:", error);
-        setLocationError(
-          "Не удалось определить местоположение. Заполните вручную.",
-        );
-      } finally {
-        setIsLoadingLocation(false);
-      }
-    };
-
-    detectLocation();
-  }, []);
-
   // Закрытие списка предложений при клике вне него
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -637,33 +637,6 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
-  // Функция обновления адреса по геолокации
-  const updateLocation = async () => {
-    setIsLoadingLocation(true);
-    setLocationError(null);
-
-    try {
-      const position = await getCurrentPosition();
-      const addressData = await getAddressFromCoords(
-        position.lat,
-        position.lng,
-      );
-
-      setPatientInfo((prev) => ({
-        ...prev,
-        address: addressData.address,
-        district: addressData.district,
-      }));
-
-      setLocationError(null);
-    } catch (error) {
-      console.error("Ошибка определения местоположения:", error);
-      setLocationError("Не удалось определить местоположение");
-    } finally {
-      setIsLoadingLocation(false);
-    }
-  };
 
   // Поиск адресов с дебаунсом
   const searchAddress = useCallback(async (query: string) => {
@@ -682,8 +655,13 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
     searchTimeoutRef.current = setTimeout(async () => {
       try {
         const results = await searchAddresses(query);
-        setAddressSuggestions(results);
-        setShowSuggestions(results.length > 0);
+        // Добавляем короткую версию адреса к каждому результату
+        const resultsWithShort = results.map(item => ({
+          ...item,
+          short_address: getShortAddress(item.display_name)
+        }));
+        setAddressSuggestions(resultsWithShort);
+        setShowSuggestions(resultsWithShort.length > 0);
       } catch (error) {
         console.error("Ошибка поиска:", error);
         setAddressSuggestions([]);
@@ -708,13 +686,15 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
   };
 
   // Выбор адреса из предложений
-  const selectAddress = (address: string) => {
-    setPatientInfo((prev) => ({ ...prev, address }));
+  const selectAddress = (item: { display_name: string; short_address: string; lat: string; lon: string }) => {
+    // Используем короткую версию адреса
+    const shortAddress = item.short_address || getShortAddress(item.display_name);
+    setPatientInfo((prev) => ({ ...prev, address: shortAddress }));
     setShowSuggestions(false);
     setAddressSuggestions([]);
 
     // Определяем район по выбранному адресу
-    const foundDistrict = extractDistrictFromAddress(address);
+    const foundDistrict = extractDistrictFromAddress(shortAddress);
     if (foundDistrict) {
       setPatientInfo((prev) => ({ ...prev, district: foundDistrict }));
     }
@@ -730,7 +710,7 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const handleStartCall = () => {
+  const handleStartCall = async () => {
     if (!patientInfo.name.trim() || !patientInfo.address.trim()) {
       alert("Пожалуйста, заполните ФИО пациента и адрес");
       return;
@@ -746,36 +726,58 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
 
     setStep("loading");
 
-    setTimeout(() => {
-      let destination = getCenterForDistrict(patientInfo.district);
-      let centerType = "Сосудистый центр";
+    try {
+      // Получаем координаты адреса
+      const coords = await getCoordinatesFromAddress(patientInfo.address);
+      
+      let destination: string = "";
+      let centerType: string = "";
 
       if (allSecondOptions) {
-        const center = Object.values(CENTERS_MAP).find(
-          (c) => c.type === "with_surgery",
-        );
-        destination =
-          center?.name ||
-          "ГАУЗ «Оренбургская областная клиническая больница им. В.И. Войнова»";
         centerType = "Сосудистый центр с операционной";
+        // Если есть координаты, ищем ближайший центр с операционной
+        if (coords) {
+          const center = findNearestCenter(coords.lat, coords.lon, 'with_surgery');
+          destination = center || "ГАУЗ «Оренбургская областная клиническая больница им. В.И. Войнова»";
+        } else {
+          // Если координаты не получены, используем старую логику
+          const center = Object.values(CENTERS_MAP).find(
+            (c) => c.type === "with_surgery",
+          );
+          destination = center?.name || "ГАУЗ «Оренбургская областная клиническая больница им. В.И. Войнова»";
+        }
       } else if (anySecondOption) {
-        const center = Object.values(CENTERS_MAP).find(
-          (c) => c.type === "without_surgery",
-        );
-        destination = center?.name || "ГБУЗ «Сорочинская межрайонная больница»";
-        centerType = "Сосудистый центр без операционной";
+        centerType = "Сосудистый центр";
+        // Если есть координаты, ищем ближайший центр без операционной
+        if (coords) {
+          const center = findNearestCenter(coords.lat, coords.lon, 'without_surgery');
+          destination = center || "ГБУЗ «Сорочинская межрайонная больница»";
+        } else {
+          // Если координаты не получены, используем старую логику
+          const center = Object.values(CENTERS_MAP).find(
+            (c) => c.type === "without_surgery",
+          );
+          destination = center?.name || "ГБУЗ «Сорочинская межрайонная больница»";
+        }
       }
 
-      // 👇 Объявляем переменную resultData
+      // Если destination все еще пустой, используем запасной вариант
+      if (!destination) {
+        destination = getCenterForDistrict(patientInfo.district);
+        if (!centerType) {
+          centerType = "Сосудистый центр";
+        }
+      }
+
       const resultData = {
         address: destination || "Центр не найден",
-        type: centerType,
+        type: centerType || "Сосудистый центр",
         district: patientInfo.district,
       };
 
       setResult(resultData);
 
-      // Создаем вызов сразу
+      // Создаем вызов
       const newCall = createCall({
         patientName: patientInfo.name,
         address: patientInfo.address,
@@ -787,7 +789,11 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
 
       setCreatedCallId(newCall.id);
       setStep("result");
-    }, 1500);
+    } catch (error) {
+      console.error("Ошибка при создании вызова:", error);
+      alert("Произошла ошибка при создании вызова. Попробуйте еще раз.");
+      setStep("checklist");
+    }
   };
 
   const handleClose = () => {
@@ -875,35 +881,10 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
                             setShowSuggestions(true);
                           }
                         }}
-                        placeholder="Введите адрес или используйте геолокацию..."
-                        className="w-full px-4 py-2 text-black border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none pr-18"
+                        placeholder="Введите адрес"
+                        className="w-full px-4 py-2 text-black border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none pr-10"
                       />
                       <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-                        {/* Кнопка обновления геолокации */}
-                        <button
-                          onClick={updateLocation}
-                          disabled={isLoadingLocation}
-                          className="p-1.5 text-blue-600 hover:text-blue-800 rounded-lg hover:bg-blue-50 transition disabled:opacity-50 flex items-center gap-1"
-                          title="Определить местоположение"
-                        >
-                          {isLoadingLocation ? (
-                            <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                          ) : (
-                            <svg
-                              className="w-4 h-4 scale-x-[-1]"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                              />
-                            </svg>
-                          )}
-                        </button>
                         {patientInfo.address && (
                           <button
                             onClick={clearAddress}
@@ -941,7 +922,7 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
                           {addressSuggestions.map((item, index) => (
                             <button
                               key={index}
-                              onClick={() => selectAddress(item.display_name)}
+                              onClick={() => selectAddress(item)}
                               className="w-full px-4 py-2 text-left text-sm hover:bg-blue-50 transition flex items-start gap-2 border-b border-gray-50 last:border-none"
                             >
                               <svg
@@ -963,22 +944,22 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
                                   d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"
                                 />
                               </svg>
-                              <span className="text-gray-700">
-                                {item.display_name}
-                              </span>
+                              <div className="flex flex-col items-start">
+                                <span className="text-gray-700 font-medium">
+                                  {item.short_address}
+                                </span>
+                                <span className="text-xs text-gray-400 truncate max-w-full">
+                                  {item.display_name}
+                                </span>
+                              </div>
                             </button>
                           ))}
                         </div>
                       )}
                     </div>
                     <p className="text-xs text-gray-400 mt-1">
-                      Введите адрес вручную, если он не определился вручную
+                      Введите адрес вручную
                     </p>
-                    {locationError && (
-                      <p className="text-xs text-red-500 mt-1">
-                        {locationError}
-                      </p>
-                    )}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1001,7 +982,7 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
                       ))}
                     </select>
                     <p className="text-xs text-gray-400 mt-1">
-                      Район автоматически определен по адресу
+                      Район автоматически определяется по адресу
                     </p>
                   </div>
                 </div>

@@ -84,24 +84,6 @@ async function fetchRoute(
   }
 }
 
-// Генерация маршрута-заглушки
-function generateFallbackRoute(
-  start: { lat: number; lng: number },
-  end: { lat: number; lng: number },
-  segments: number = 30,
-): [number, number][] {
-  const points: [number, number][] = [];
-
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    const curveOffset = Math.sin(t * Math.PI * 2) * 0.002;
-    const lat = start.lat + (end.lat - start.lat) * t + curveOffset * 0.5;
-    const lng = start.lng + (end.lng - start.lng) * t + curveOffset;
-    points.push([lat, lng]);
-  }
-
-  return points;
-}
 
 // Вычисление направления движения (азимут)
 function calculateBearing(
@@ -378,11 +360,6 @@ export default function MapPage() {
           setDistance(Math.round(route.distance * 10) / 10);
           setTravelTime(Math.round(route.duration));
         } else {
-          const fallbackPoints = generateFallbackRoute(
-            userLocation,
-            destinationPos,
-          );
-          setRoutePoints(fallbackPoints);
 
           const dist = calculateDistance(
             userLocation.lat,
