@@ -40,22 +40,26 @@ async function searchAddresses(
     }
 
     const data = await response.json();
-    
+
     // Фильтруем результаты, чтобы оставить только адреса из Оренбургской области
     const filteredData = data.filter((item: any) => {
       const address = item.address || {};
       // Проверяем наличие Оренбургской области в адресе
-      const state = address.state || address.region || '';
-      const city = address.city || address.town || address.village || '';
-      const fullAddress = item.display_name || '';
-      
+      const state = address.state || address.region || "";
+      const city = address.city || address.town || address.village || "";
+      const fullAddress = item.display_name || "";
+
       // Проверяем, что адрес относится к Оренбургской области
-      return state.includes('Оренбургская') || 
-             state.includes('Оренбург') ||
-             fullAddress.includes('Оренбургская область') ||
-             fullAddress.includes('Оренбургская обл') ||
-             // Также включаем адреса из города Оренбург
-             (city.includes('Оренбург') && !state.includes('Москва') && !state.includes('Санкт-Петербург'));
+      return (
+        state.includes("Оренбургская") ||
+        state.includes("Оренбург") ||
+        fullAddress.includes("Оренбургская область") ||
+        fullAddress.includes("Оренбургская обл") ||
+        // Также включаем адреса из города Оренбург
+        (city.includes("Оренбург") &&
+          !state.includes("Москва") &&
+          !state.includes("Санкт-Петербург"))
+      );
     });
 
     return filteredData.slice(0, 10);
@@ -88,10 +92,12 @@ async function getCoordinatesFromAddress(
     if (data && data.length > 0) {
       // Дополнительная проверка, что адрес из Оренбургской области
       const addressData = data[0];
-      const fullAddress = addressData.display_name || '';
-      if (!fullAddress.includes('Оренбургская область') && 
-          !fullAddress.includes('Оренбург') &&
-          !fullAddress.includes('Оренбургская обл')) {
+      const fullAddress = addressData.display_name || "";
+      if (
+        !fullAddress.includes("Оренбургская область") &&
+        !fullAddress.includes("Оренбург") &&
+        !fullAddress.includes("Оренбургская обл")
+      ) {
         return null;
       }
       return {
@@ -142,81 +148,103 @@ const extractDistrictFromAddress = (address: string): string | null => {
 // Функция для получения краткого адреса (город, улица, дом, район)
 function getShortAddress(fullAddress: string): string {
   if (!fullAddress) return "";
-  
+
   // Разбиваем адрес на части
-  const parts = fullAddress.split(',').map(p => p.trim());
-  
+  const parts = fullAddress.split(",").map((p) => p.trim());
+
   // Оставляем только значимые части: город, улицу, дом, район
   const importantParts: string[] = [];
   let hasStreet = false;
   let hasCity = false;
   let hasHouse = false;
   let hasDistrict = false;
-  
+
   for (const part of parts) {
     const lower = part.toLowerCase();
-    
+
     // Проверяем, является ли часть городом
-    if (lower.includes('город') || lower.includes('г.') || 
-        lower.includes('поселок') || lower.includes('село') || 
-        lower.includes('деревня') || lower.includes('г ') ||
-        /^[а-яА-Я]+\s*$/.test(part) && part.length <= 20) {
+    if (
+      lower.includes("город") ||
+      lower.includes("г.") ||
+      lower.includes("поселок") ||
+      lower.includes("село") ||
+      lower.includes("деревня") ||
+      lower.includes("г ") ||
+      (/^[а-яА-Я]+\s*$/.test(part) && part.length <= 20)
+    ) {
       if (!hasCity) {
         importantParts.push(part);
         hasCity = true;
       }
-    } 
+    }
     // Проверяем, является ли часть улицей
-    else if (lower.includes('улица') || lower.includes('ул.') || 
-             lower.includes('проспект') || lower.includes('пр.') || 
-             lower.includes('переулок') || lower.includes('пер.') ||
-             lower.includes('бульвар') || lower.includes('б-р') ||
-             lower.includes('шоссе') || lower.includes('аллея') ||
-             lower.includes('набережная')) {
+    else if (
+      lower.includes("улица") ||
+      lower.includes("ул.") ||
+      lower.includes("проспект") ||
+      lower.includes("пр.") ||
+      lower.includes("переулок") ||
+      lower.includes("пер.") ||
+      lower.includes("бульвар") ||
+      lower.includes("б-р") ||
+      lower.includes("шоссе") ||
+      lower.includes("аллея") ||
+      lower.includes("набережная")
+    ) {
       if (!hasStreet) {
         importantParts.push(part);
         hasStreet = true;
       }
-    } 
+    }
     // Проверяем, является ли часть номером дома
-    else if (lower.includes('дом') || lower.includes('д.') || 
-             /^\s*\d+/.test(part) || /д\.\s*\d+/.test(lower)) {
+    else if (
+      lower.includes("дом") ||
+      lower.includes("д.") ||
+      /^\s*\d+/.test(part) ||
+      /д\.\s*\d+/.test(lower)
+    ) {
       if (!hasHouse) {
         importantParts.push(part);
         hasHouse = true;
       }
     }
     // Проверяем, является ли часть районом
-    else if (lower.includes('район') || lower.includes('р-н')) {
+    else if (lower.includes("район") || lower.includes("р-н")) {
       if (!hasDistrict) {
         importantParts.push(part);
         hasDistrict = true;
       }
     }
   }
-  
+
   // Если не удалось собрать адрес, возвращаем первые 3 части
   if (importantParts.length === 0) {
-    return parts.slice(0, 3).join(', ');
+    return parts.slice(0, 3).join(", ");
   }
-  
+
   // Если есть город, но нет улицы и дома, добавляем еще части
   if (hasCity && !hasStreet && !hasHouse) {
-    const additionalParts = parts.filter(p => !importantParts.includes(p));
+    const additionalParts = parts.filter((p) => !importantParts.includes(p));
     if (additionalParts.length > 0) {
-      importantParts.push(additionalParts.slice(0, 2).join(', '));
+      importantParts.push(additionalParts.slice(0, 2).join(", "));
     }
   }
-  
-  return importantParts.join(', ');
+
+  return importantParts.join(", ");
 }
 
 // Функция для определения ближайшего центра по координатам
-function findNearestCenter(lat: number, lon: number, centerType: 'with_surgery' | 'without_surgery'): string | null {
+function findNearestCenter(
+  lat: number,
+  lon: number,
+  centerType: "with_surgery" | "without_surgery",
+): string | null {
   // Здесь должна быть логика поиска ближайшего центра по координатам
   // Пока используем существующую логику с районами
   // Для демонстрации возвращаем первый подходящий центр
-  const centers = Object.values(CENTERS_MAP).filter(c => c.type === centerType);
+  const centers = Object.values(CENTERS_MAP).filter(
+    (c) => c.type === centerType,
+  );
   if (centers.length > 0) {
     return centers[0].name;
   }
@@ -512,7 +540,11 @@ export default function CallsPage() {
                         >
                           {getStatusText(call.status)}
                         </span>
-                        { call.reason && <span className="text-black text-sm opacity-20">Причина: {call.reason}</span>}
+                        {call.reason && (
+                          <span className="text-black text-sm opacity-20">
+                            Причина: {call.reason}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-gray-600 min-w-[200px]">
                         <div className="flex flex-col items-start justify-center gap-1">
@@ -601,7 +633,12 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
 
   // Состояния для автодополнения адреса
   const [addressSuggestions, setAddressSuggestions] = useState<
-    Array<{ display_name: string; lat: string; lon: string; short_address: string }>
+    Array<{
+      display_name: string;
+      lat: string;
+      lon: string;
+      short_address: string;
+    }>
   >([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -656,9 +693,9 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
       try {
         const results = await searchAddresses(query);
         // Добавляем короткую версию адреса к каждому результату
-        const resultsWithShort = results.map(item => ({
+        const resultsWithShort = results.map((item) => ({
           ...item,
-          short_address: getShortAddress(item.display_name)
+          short_address: getShortAddress(item.display_name),
         }));
         setAddressSuggestions(resultsWithShort);
         setShowSuggestions(resultsWithShort.length > 0);
@@ -686,9 +723,15 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
   };
 
   // Выбор адреса из предложений
-  const selectAddress = (item: { display_name: string; short_address: string; lat: string; lon: string }) => {
+  const selectAddress = (item: {
+    display_name: string;
+    short_address: string;
+    lat: string;
+    lon: string;
+  }) => {
     // Используем короткую версию адреса
-    const shortAddress = item.short_address || getShortAddress(item.display_name);
+    const shortAddress =
+      item.short_address || getShortAddress(item.display_name);
     setPatientInfo((prev) => ({ ...prev, address: shortAddress }));
     setShowSuggestions(false);
     setAddressSuggestions([]);
@@ -729,7 +772,7 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
     try {
       // Получаем координаты адреса
       const coords = await getCoordinatesFromAddress(patientInfo.address);
-      
+
       let destination: string = "";
       let centerType: string = "";
 
@@ -737,33 +780,47 @@ function NewCallModal({ onClose }: { onClose: () => void }) {
         centerType = "Сосудистый центр с операционной";
         // Если есть координаты, ищем ближайший центр с операционной
         if (coords) {
-          const center = findNearestCenter(coords.lat, coords.lon, 'with_surgery');
-          destination = center || "ГАУЗ «Оренбургская областная клиническая больница им. В.И. Войнова»";
+          const center = findNearestCenter(
+            coords.lat,
+            coords.lon,
+            "with_surgery",
+          );
+          destination =
+            center ||
+            "ГАУЗ «Оренбургская областная клиническая больница им. В.И. Войнова»";
         } else {
           // Если координаты не получены, используем старую логику
           const center = Object.values(CENTERS_MAP).find(
             (c) => c.type === "with_surgery",
           );
-          destination = center?.name || "ГАУЗ «Оренбургская областная клиническая больница им. В.И. Войнова»";
+          destination =
+            center?.name ||
+            "ГАУЗ «Оренбургская областная клиническая больница им. В.И. Войнова»";
         }
       } else if (anySecondOption) {
         centerType = "Сосудистый центр";
         // Если есть координаты, ищем ближайший центр без операционной
         if (coords) {
-          const center = findNearestCenter(coords.lat, coords.lon, 'without_surgery');
+          const center = findNearestCenter(
+            coords.lat,
+            coords.lon,
+            "without_surgery",
+          );
           destination = center || "ГБУЗ «Сорочинская межрайонная больница»";
         } else {
           // Если координаты не получены, используем старую логику
           const center = Object.values(CENTERS_MAP).find(
             (c) => c.type === "without_surgery",
           );
-          destination = center?.name || "ГБУЗ «Сорочинская межрайонная больница»";
+          destination =
+            center?.name || "ГБУЗ «Сорочинская межрайонная больница»";
         }
       }
 
       // Если destination все еще пустой, используем запасной вариант
       if (!destination) {
-        destination = getCenterForDistrict(patientInfo.district);
+        const fallbackCenter = getCenterForDistrict(patientInfo.district);
+        destination = fallbackCenter || "Сосудистый центр не найден";
         if (!centerType) {
           centerType = "Сосудистый центр";
         }
