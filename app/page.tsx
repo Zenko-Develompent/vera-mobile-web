@@ -29,7 +29,7 @@ export default function LoginPage() {
 
     // Имитация задержки запроса к серверу
     setTimeout(() => {
-      const user = authenticateUser(login, password);
+      const user = authenticateUser(login.trim(), password.trim());
       
       if (user) {
         localStorage.setItem('user', JSON.stringify(user));
